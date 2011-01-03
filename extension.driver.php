@@ -6,8 +6,11 @@
 		protected $_cacheLite = null;
 		protected $_lifetime = null;
 		protected $_url = null;
+		protected $group = 'default';
+		protected $_continue = true;
 		private $_sections = array();
 		private $_entries = array();
+		
 		
 		function __construct($args) {
 			require_once('lib/class.cachelite.php');
@@ -22,8 +25,6 @@
 				'cacheDir' => CACHE . '/',
 				'lifeTime' => $this->_lifetime
 			));
-			
-			$this->_url = $_SERVER['REQUEST_URI'];
 		}
 		
 		/*-------------------------------------------------------------------------
@@ -268,8 +269,11 @@
 		-------------------------------------------------------------------------*/
 		
 		public function intercept_page($context) {
-			require_once(CORE . '/class.frontend.php');
-		
+
+			$url  = $context['page']->_page;
+			$url .= $this->getQueryString($context['page_data']);
+			$this->_url = $url;
+
 			if($this->_in_excluded_pages()) return;
 			$logged_in = $this->_frontend->isLoggedIn();
 			
@@ -282,8 +286,24 @@
 				$url = rtrim(trim(preg_replace('/&?flush(\=[^&]+)?/i', NULL, $_SERVER['REQUEST_URI']), "&"), "?");
 				$this->_cacheLite->remove($url);
 			}
-			else if (!$logged_in && $output = $this->_cacheLite->get($this->_url))
+			else if (!$logged_in)
 			{
+				$continue = true;
+
+				$em = new ExtensionManager(Frontend::instance());
+				$em->notifyMembers(
+					'cacheLitePreExecute', '/frontend/', array(
+						'url' => &$this->_url,
+						'group' => &$this->group,
+						'continue' => &$continue
+				));
+
+				$this->_continue = $continue;
+				if (!$continue) return;
+
+				$output = $this->_cacheLite->get($this->_url, $this->group);
+				if (!$output) return;
+
 				# Add comment
 				if ($this->_get_comment_pref() == 'yes') $output .= "<!-- Cache served: ". $this->_cacheLite->_fileName	." -->";
 				
@@ -337,7 +357,7 @@
 		}
 		
 		public function write_page_cache(&$output) {
-			if($this->_in_excluded_pages()) return;
+			if($this->_in_excluded_pages() || !$this->_continue) return;
 			$logged_in = $this->_frontend->isLoggedIn();
 			
 			if ( ! $logged_in)
@@ -349,7 +369,7 @@
 				$this->_delete_page_references($this->_url);
 				$this->_save_page_references($this->_url, $this->_sections, $this->_entries);
 				
-				if (!$this->_cacheLite->get($this->_url)) {
+				if (!$this->_cacheLite->get($this->_url, $this->group)) {
 					$this->_cacheLite->save($render);
 				}
 				
@@ -368,6 +388,7 @@
 		
 		# Parse any Event or Section elements from the page XML
 		public function parse_page_data($context) {
+			return;
 			$xml = DomDocument::loadXML($context['xml']);
 			$xpath = new DOMXPath($xml);
 			
@@ -412,7 +433,7 @@
 			// flush the cache for each
 			foreach($pages as $page) {
 				$url = $page['page'];
-				$this->_cacheLite->remove($url);
+				$this->_cacheLite->remove($url, $this->group);
 				$this->_delete_page_references($url);
 			}
 
@@ -474,6 +495,7 @@
 		-------------------------------------------------------------------------*/
 		
 		private function _get_pages_by_content($id, $type) {
+			return array();
 			return $this->_frontend->Database->fetch(
 				sprintf(
 					"SELECT page FROM tbl_cachelite_references WHERE %s LIKE '%%|%s|%%'",
@@ -484,6 +506,7 @@
 		}
 		
 		private function _delete_page_references($url) {
+			return;
 			$this->_frontend->Database->query(
 				sprintf(
 					"DELETE FROM tbl_cachelite_references WHERE page='%s'",
@@ -493,6 +516,7 @@
 		}
 		
 		protected function _save_page_references($url, $sections, $entries) {
+			return;
 			$this->_frontend->Database->query(
 				sprintf(
 					"INSERT INTO tbl_cachelite_references (page, sections, entries) VALUES ('%s','%s','%s')",
@@ -501,5 +525,21 @@
 					'|' . implode('|', $entries) . '|'
 				)
 			);
+		}
+
+		public function getQueryString($data)
+		{
+			$page = $data['path'];
+			if (!$page) $page = $data['handle'];
+
+			if ($page == 'snippet' && $_GET['edit'] == 'snip-info')
+			{
+				return '?edit';
+			}
+		}
+
+		public function getCacheLite()
+		{
+			return $this->_cacheLite;
 		}
 	}
